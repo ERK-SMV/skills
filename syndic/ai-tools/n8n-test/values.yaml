@@ -1,0 +1,53 @@
+# n8n test deployment - ai-tools namespace
+# Postgres (postgres-n8n) and Redis (redis-n8n) are plain manifests in this
+# same folder (postgres.yaml, redis.yaml), not chart dependencies.
+# Secrets (n8n-db-password, n8n-core-secrets) are created directly in-cluster,
+# not committed here - see README.md.
+
+queueMode:
+  enabled: true
+  workerReplicaCount: 1
+  workerConcurrency: 5
+
+service:
+  type: ClusterIP
+  port: 5678
+
+persistence:
+  enabled: true
+  accessModes: ["ReadWriteOnce"]
+  size: 2Gi
+  storageClassName: local-path
+
+secretRefs:
+  existingSecret: "n8n-core-secrets"
+
+database:
+  type: postgresdb
+  useExternal: true
+  host: "postgres-n8n.ai-tools.svc.cluster.local"
+  port: 5432
+  database: n8n
+  schema: "public"
+  user: n8n
+  passwordSecret:
+    name: "n8n-db-password"
+    key: "password"
+
+redis:
+  enabled: true
+  useExternal: true
+  host: "redis-n8n.ai-tools.svc.cluster.local"
+  port: 6379
+  passwordSecret: null
+
+resources:
+  requests:
+    memory: "256Mi"
+    cpu: "200m"
+  limits:
+    memory: "512Mi"
+    cpu: "500m"
+
+config:
+  timezone: Europe/Zurich

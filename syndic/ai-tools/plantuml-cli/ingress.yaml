@@ -1,0 +1,36 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: plantuml-ingress
+  namespace: ai-tools
+  labels:
+    app: plantuml-server
+    component: diagramming
+  annotations:
+    # Use appropriate annotations for your ingress controller
+    # For Nginx Ingress:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    # For Traefik Ingress:
+    # traefik.ingress.kubernetes.io/router.entrypoints: web
+    # For OVH (common in your setup):
+    # kubernetes.io/ingress.class: "ovh"
+    # cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  ingressClassName: nginx  # Change to your ingress class (e.g., "ovh", "traefik")
+  rules:
+  - host: plantuml.ai-tools.svc.cluster.local  # Internal DNS - change to your domain
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: plantuml-service
+            port:
+              number: 80
+  # Uncomment for external access with TLS:
+  # tls:
+  # - hosts:
+  #   - plantuml.your-domain.com
+  #   secretName: plantuml-tls

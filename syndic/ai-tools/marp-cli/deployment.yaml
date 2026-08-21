@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: marp-server
+  namespace: ai-tools
+  labels:
+    app: marp-server
+    component: presentation
+    version: "1.0.0"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: marp-server
+  template:
+    metadata:
+      labels:
+        app: marp-server
+        component: presentation
+    spec:
+      volumes:
+      - name: startup-script
+        configMap:
+          name: marp-startup-script
+          defaultMode: 0755
+      containers:
+      - name: marp
+        image: node:20-bookworm
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        command: ["/bin/sh", "/config/startup.sh"]
+        volumeMounts:
+        - name: startup-script
+          mountPath: /config
+          readOnly: true
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 120
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 1
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+      nodeSelector:
+        kubernetes.io/os: linux

@@ -1,0 +1,54 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: marp-startup-script
+  namespace: ai-tools
+  labels:
+    app: marp-server
+    component: presentation
+data:
+  startup.sh: |
+    #!/bin/sh
+    set -e
+    
+    # Install global marp-cli first
+    npm install -g @marp-team/marp-cli@latest
+    
+    # Create working directory
+    mkdir -p /tmp/marp-app
+    cd /tmp/marp-app
+    
+    # Initialize package.json and install local dependencies
+    echo '{"name":"marp-server","version":"1.0.0","dependencies":{"express":"^4.18.2","body-parser":"^1.20.2"}}' > package.json
+    npm install
+    
+    # Write server script
+    cat > /tmp/server.js << 'EOF'
+    const express = require("/tmp/marp-app/node_modules/express");
+    const bodyParser = require("/tmp/marp-app/node_modules/body-parser");
+    const { exec } = require("child_process");
+    const app = express();
+    
+    app.use(bodyParser.text({ type: "*/*", limit: "10mb" }));
+    
+    app.post("/api/marp", (req, res) => {
+      exec("marp --html --allow-local-files", { maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+        if (error) {
+          return res.status(500).send(stderr || error.message);
+        }
+        res.set("Content-Type", "text/html");
+        res.send(stdout);
+      }).stdin.end(req.body);
+    });
+    
+    app.get("/", (req, res) => {
+      res.send("Marp Server is running - POST Markdown to /api/marp");
+    });
+    
+    app.listen(8080, "0.0.0.0", () => {
+      console.log("Marp Server running on port 8080");
+    });
+    EOF
+    
+    # Start server
+    node /tmp/server.js
