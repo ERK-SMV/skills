@@ -1,0 +1,448 @@
+---
+# Runboat Kubernetes Configuration for OCA/vertical-association
+# Compatible with your existing RKE2 cluster (flows.cab infrastructure)
+# Reference: odoo-k8s-readme.md, odoo18-AK-template_README.md
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: runboat
+  labels:
+    name: runboat
+    purpose: oca-ci
+
+---
+# Service Account for Runboat Controller
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: runboat
+  namespace: runboat
+
+---
+# RBAC Role - Minimum permissions required by Runboat
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: runboat
+  name: runboat
+rules:
+# Required for managing build deployments
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+# Required for managing initialization and cleanup jobs
+- apiGroups: ["batch"]
+  resources: ["jobs", "cronjobs"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+# Required for managing services and networking
+- apiGroups: [""]
+  resources: ["pods", "pods/log", "services", "endpoints"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+# Required for managing configuration
+- apiGroups: [""]
+  resources: ["configmaps", "secrets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+# Required for persistent storage
+- apiGroups: [""]
+  resources: ["persistentvolumeclaims"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+# Required for ingress
+- apiGroups: ["networking.k8s.io"]
+  resources: ["ingresses"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+---
+# RBAC Role Binding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: runboat
+  namespace: runboat
+subjects:
+- kind: ServiceAccount
+  name: runboat
+  namespace: runboat
+roleRef:
+  kind: Role
+  name: runboat
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# ConfigMap - Runboat Configuration for OCA/vertical-association
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: runboat-config
+  namespace: runboat
+data:
+  # Main configuration file
+  config.yaml: |
+    # Runboat Server Configuration
+    server:
+      host: "0.0.0.0"
+      port: 8000
+      workers: 1
+    
+    # Database for Runboat metadata (not the Odoo databases)
+    db_uri: "postgresql://odoo:$(RUNBOAT_DB_PASSWORD)@postgres-14.fnfe-test.svc.cluster.local:5432/runbot_db"
+    
+    # Build Domain Configuration
+    build_domain: "runboat.flows.cab"
+    
+    # Build Limits (adjust based on your cluster capacity)
+    max_build_age: 30               # Days to keep old builds
+    max_started_build_age: 7      # Days to keep started builds  
+    max_build_count: 100          # Maximum total builds
+    max_started_build_count: 20  # Maximum started builds
+    max_concurrent_init_jobs: 4   # Concurrent initialization jobs
+    
+    # OCA/vertical-association Repository Configuration
+    repos:
+      - repo: "^OCA/vertical-association$"
+        branch: "^(14\.0|16\.0|18\.0)$"
+        builds:
+          # Odoo 14.0
+          - image: "ghcr.io/oca/oca-ci/py3.8-odoo14.0:latest"
+            kubefiles_path: "/app/runboat/src/runboat/kubefiles"
+          # Odoo 16.0
+          - image: "ghcr.io/oca/oca-ci/py3.8-odoo16.0:latest"
+            kubefiles_path: "/app/runboat/src/runboat/kubefiles"
+          # Odoo 18.0
+          - image: "ghcr.io/oca/oca-ci/py3.11-odoo18.0:latest"
+            kubefiles_path: "/app/runboat/src/runboat/kubefiles"
+    
+    # GitHub Configuration
+    github:
+      webhook_secret_file: "/app/secrets/webhook-secret"
+    
+    # Kubernetes Configuration
+    kubernetes:
+      namespace: "runboat"
+      storage_class: "local-path"  # Use your existing storage class
+      
+    # Logging Configuration
+    logging:
+      level: "INFO"
+      format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+---
+# Secrets - Sensitive Configuration
+# Create with: kubectl create secret generic runboat-secrets -n runboat \
+#   --from-literal=db-password=$(pass show odoo/runbot-db) \
+#   --from-literal=webhook-secret=$(openssl rand -hex 32) \
+#   --from-literal=admin-password=$(openssl rand -hex 16)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: runboat-secrets
+  namespace: runboat
+type: Opaque
+stringData:
+  db-password: "CHANGE_ME_use_Passbolt"  # Replace with: pass show odoo/runbot-db
+  webhook-secret: "CHANGE_ME_32_char_random"  # Replace with: openssl rand -hex 32
+  admin-password: "CHANGE_ME_runboat_admin"  # Runboat web UI password
+
+---
+# Runboat Controller Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: runboat
+  namespace: runboat
+  labels:
+    app: runboat
+    component: controller
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: runboat
+      component: controller
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: runboat
+        component: controller
+      annotations:
+        checksum/config: "{{ include (print $.Template.BasePath "/runboat-config.yaml") . | sha256sum }}"
+    spec:
+      serviceAccountName: runboat
+      containers:
+      - name: runboat
+        image: ghcr.io/sbidoul/runboat:latest
+        imagePullPolicy: Always
+        env:
+        # Runboat Configuration
+        - name: RUNBOAT_CONFIG_FILE
+          value: "/app/config/config.yaml"
+        
+        # Database Configuration
+        - name: RUNBOAT_DB_HOST
+          value: "postgres-14.fnfe-test.svc.cluster.local"
+        - name: RUNBOAT_DB_PORT
+          value: "5432"
+        - name: RUNBOAT_DB_USER
+          value: "odoo"
+        - name: RUNBOAT_DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: runboat-secrets
+              key: db-password
+        - name: RUNBOAT_DB_NAME
+          value: "runbot_db"
+        
+        # Kubernetes Configuration
+        - name: KUBERNETES_NAMESPACE
+          value: "runboat"
+        - name: RUNBOAT_BUILD_DEFAULT_KUBEFILES_PATH
+          value: "/app/runboat/src/runboat/kubefiles"
+        
+        # Build Domain
+        - name: RUNBOAT_BUILD_DOMAIN
+          value: "runboat.flows.cab"
+        
+        # GitHub Webhook
+        - name: RUNBOAT_GITHUB_WEBHOOK_SECRET_FILE
+          value: "/app/secrets/webhook-secret"
+        
+        # Admin Password
+        - name: RUNBOAT_ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: runboat-secrets
+              key: admin-password
+        
+        # Build Limits
+        - name: RUNBOAT_MAX_BUILD_AGE
+          value: "30"
+        - name: RUNBOAT_MAX_STARTED_BUILD_AGE
+          value: "7"
+        - name: RUNBOAT_MAX_BUILD_COUNT
+          value: "100"
+        - name: RUNBOAT_MAX_STARTED_BUILD_COUNT
+          value: "20"
+        - name: RUNBOAT_MAX_CONCURRENT_INIT_JOBS
+          value: "4"
+        
+        ports:
+        - containerPort: 8000
+          name: http
+          protocol: TCP
+        
+        livenessProbe:
+          httpGet:
+            path: /runboat/api/health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        
+        readinessProbe:
+          httpGet:
+            path: /runboat/api/health
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+        
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        
+        volumeMounts:
+        - name: config
+          mountPath: /app/config
+          readOnly: true
+        - name: secrets
+          mountPath: /app/secrets
+          readOnly: true
+        - name: kubefiles
+          mountPath: /app/runboat/src/runboat/kubefiles
+          readOnly: true
+      
+      volumes:
+      - name: config
+        configMap:
+          name: runboat-config
+      - name: secrets
+        secret:
+          secretName: runboat-secrets
+      - name: kubefiles
+        configMap:
+          name: runboat-kubefiles
+
+---
+# ConfigMap for Runboat Kubefiles (Odoo-specific Kubernetes resources)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: runboat-kubefiles
+  namespace: runboat
+data:
+  # This mounts the kubefiles from the runboat repository
+  # The runboat container already has these at /app/runboat/src/runboat/kubefiles
+  # We're just making them available at a consistent path
+  README.md: |
+    This ConfigMap is a placeholder. The actual kubefiles are mounted from
+    the runboat container image at /app/runboat/src/runboat/kubefiles.
+    
+    For custom kubefiles for OCA/vertical-association, create a separate
+    ConfigMap and update the RUNBOAT_BUILD_DEFAULT_KUBEFILES_PATH environment
+    variable in the deployment.
+
+---
+# Service - ClusterIP for internal access
+apiVersion: v1
+kind: Service
+metadata:
+  name: runboat
+  namespace: runboat
+  labels:
+    app: runboat
+    component: controller
+spec:
+  type: ClusterIP
+  selector:
+    app: runboat
+    component: controller
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8000
+    protocol: TCP
+
+---
+# Ingress - External access with TLS (cert-manager)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: runboat
+  namespace: runboat
+  labels:
+    app: runboat
+    component: controller
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/rewrite-target: /runboat/$2
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+    nginx.ingress.kubernetes.io/server-snippet: |
+      proxy_set_header X-Forwarded-Proto https;
+      proxy_set_header X-Forwarded-Port 443;
+      proxy_set_header X-Forwarded-For $remote_addr;
+      proxy_set_header Host $host;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Scheme $scheme;
+
+spec:
+  tls:
+  - hosts:
+    - runboat.flows.cab
+    secretName: runboat-tls
+  rules:
+  - host: runboat.flows.cab
+    http:
+      paths:
+      - pathType: Prefix
+        path: /runboat(/|$)(.*)
+        backend:
+          service:
+            name: runboat
+            port:
+              number: 80
+
+---
+# Ingress for Builds (wildcard for individual Odoo instances)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: runboat-builds
+  namespace: runboat
+  labels:
+    app: runboat
+    component: builds
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/rewrite-target: /$1
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    # Enable dynamic hostname resolution for wildcard
+    nginx.ingress.kubernetes.io/server-alias: "*.runboat.flows.cab"
+
+spec:
+  tls:
+  - hosts:
+    - "*.runboat.flows.cab"
+    secretName: runboat-builds-tls
+  rules:
+  - host: "*.runboat.flows.cab"
+    http:
+      paths:
+      - pathType: Prefix
+        path: /(.*)
+        backend:
+          service:
+            name: runboat-builds
+            port:
+              number: 80
+
+---
+# Service for Builds (headless service for dynamic DNS resolution)
+apiVersion: v1
+kind: Service
+metadata:
+  name: runboat-builds
+  namespace: runboat
+  labels:
+    app: runboat
+    component: builds
+spec:
+  clusterIP: None
+  selector:
+    runboat/build: "true"
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8069
+    protocol: TCP
+
+---
+# Network Policy (Optional - restrict access)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: runboat-allow-ingress
+  namespace: runboat
+spec:
+  podSelector:
+    matchLabels:
+      app: runboat
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: ingress-nginx
+    ports:
+    - protocol: TCP
+      port: 8000

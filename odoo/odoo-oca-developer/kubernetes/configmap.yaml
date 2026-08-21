@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: odoo-mcp-config
+data:
+  ODOO_HOST: "odoo-service"
+  ODOO_PORT: "8069"
+  ODOO_DB: "your_database"
+  MCP_HOST: "0.0.0.0"
+  MCP_PORT: "3000"
+  CONNECTION_POOL_SIZE: "10"
+  REQUEST_TIMEOUT: "60"
+  LOG_LEVEL: "INFO"

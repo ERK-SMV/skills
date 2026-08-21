@@ -1,0 +1,101 @@
+networks:
+  traefik:
+    external: true
+  local:
+services:
+  db:
+    image: postgres:16
+    # UID and GID should be defined
+    # and .db/data created with UID rights (better)
+    # or UID and GID not defined and .db not existing
+    # before running otherwise pg fail to start. (worst)
+    user: $UID:$GID
+    environment:
+      POSTGRES_USER: odoo
+      POSTGRES_DB: db
+      POSTGRES_PASSWORD: odoo
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      # it's important to have two dirs level
+      # otherwise, permissions with uid do not
+      # work well (docker <=27)
+      - .db/data:/var/lib/postgresql/data/pgdata
+    networks:
+      - local
+  odoo:
+    build:
+      context: odoo
+      target: dev
+    image: ${PROJECT_NAME}
+    # cache_from: ${PROJECT_NAME} # main branch
+    environment:
+      # sentry and bus_alt_connection are not necessary on dev
+      # you may want to add queue_job here
+      SERVER_WIDE_MODULES: web
+
+      # DB_ and PG specified because entrypoint is not always ran if docker exec
+      DB_USER: odoo
+      DB_HOST: db
+      DB_PASSWORD: odoo
+      DB_NAME: db
+      PGDATABASE: db
+      PGUSER: odoo
+      PGHOST: db
+      PGPASSWORD: odoo
+      LIST_DB: "True"
+      DB_FILTER: .*
+      WITHOUT_DEMO: "False"
+      WORKERS: 0
+      ODOO_REPORT_URL: http://odoo:8069
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik"
+      - "traefik.http.routers.${COMPOSE_PROJECT_NAME}.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.routers.${COMPOSE_PROJECT_NAME}-long.rule=Host(`${DOMAIN}`) && PathPrefix(`/longpolling/`)"
+      - "traefik.http.routers.${COMPOSE_PROJECT_NAME}.service=${COMPOSE_PROJECT_NAME}odoo"
+      - "traefik.http.routers.${COMPOSE_PROJECT_NAME}-long.service=${COMPOSE_PROJECT_NAME}odoo_long"
+      - "traefik.http.services.${COMPOSE_PROJECT_NAME}odoo.loadbalancer.server.port=8069"
+      - "traefik.http.services.${COMPOSE_PROJECT_NAME}odoo_long.loadbalancer.server.port=8072"
+      - "traefik.http.middlewares.${COMPOSE_PROJECT_NAME}corsHeader.headers.accessControlAllowMethods=
+        GET,POST,OPTIONS,PUT"
+      - "traefik.http.middlewares.${COMPOSE_PROJECT_NAME}corsHeader.headers.accessControlAllowOriginList=*"
+      - "traefik.http.middlewares.${COMPOSE_PROJECT_NAME}corsHeader.headers.accessControlAllowHeaders=DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,api-key,partner-email,authorization,sess-cart-id,website-unique-key"
+      - "traefik.http.middlewares.${COMPOSE_PROJECT_NAME}corsHeader.headers.accessControlExposeHeaders=Content-Length,Content-Range"
+      - "traefik.http.middlewares.${COMPOSE_PROJECT_NAME}corsHeader.headers.addVaryHeader=true"
+      - "traefik.http.routers.${COMPOSE_PROJECT_NAME}.middlewares=${COMPOSE_PROJECT_NAME}corsHeader"
+      - "docky.help=http://${DOMAIN}"
+    links:
+      - db
+      - kwkhtmltopdf
+    networks:
+      - local
+      - traefik
+    volumes:
+      # do not mount /odoo directly
+      # we want to preserve /odoo/venv
+      - ./odoo/start-entrypoint.d:/odoo/start-entrypoint.d
+      - ./odoo/scripts:/odoo/scripts
+      - ./odoo/external-src:/odoo/external-src
+      - ./odoo/links:/odoo/links
+      - ./odoo/local-src:/odoo/local-src
+      # mount directly files in order to preserve odoo.egg-info
+      # otherwise it has to be pip install -e at runtime
+      - ./odoo/src/addons:/odoo/src/addons
+      - ./odoo/src/odoo:/odoo/src/odoo
+      - ./odoo/src/setup.py:/odoo/src/setup.py
+      - ./odoo/src/setup.cfg:/odoo/src/setup.cfg
+      - ./odoo/src/requirements.txt:/odoo/src/requirements.txt
+      - ./odoo/pytest.ini:/odoo/pytest.ini
+      # data
+      - ./data/addons:/data/odoo/addons
+      - ./data/filestore:/data/odoo/filestore
+      - ./data/sessions:/data/odoo/sessions
+      - ./data/shared:/data/odoo/shared
+      # mount home dir
+      # - ./.home/.bash_history:/home/odoo/.bash_history
+      # mount backup directory
+      - ./backup:/odoo/backup
+  kwkhtmltopdf:
+    image: acsone/kwkhtmltopdf
+    networks:
+      - local

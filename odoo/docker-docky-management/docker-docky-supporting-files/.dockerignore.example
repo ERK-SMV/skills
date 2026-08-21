@@ -1,0 +1,80 @@
+# Git
+.git
+.gitignore
+.gitmodules
+.gitlab-ci.yml
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Editor
+*~
+*.un~
+*.tmp
+*.bak
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+.eggs/
+*.egg-info/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Docker
+Dockerfile*
+docker-compose*.yml
+.docker/
+
+# Environment files
+.env
+.env.*
+.env.local
+.env.*.local
+
+# Compose override files
+docker-compose.override.yml
+
+# Documentation
+*.md
+README*
+
+# Logs
+*.log
+logs/
+
+# Local customizations
+local-src/
+
+# Backup
+backup/
+*.sql
+*.dump
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# OS
+.DS_Store
+.Trashes
+ehthumbs.db
+Thumbs.db

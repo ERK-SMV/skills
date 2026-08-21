@@ -1,0 +1,291 @@
+---
+# Odoo MCP Client Deployment for Hermes Integration
+# Connects mcp-server-odoo Python package to Odoo instances
+# Reference: mcp_server-19.0.1.0.0/README-Hermes.md
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mcp
+  labels:
+    name: mcp
+    purpose: odoo-mcp-client
+
+---
+# Service Account for MCP Odoo Client
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mcp-odoo
+  namespace: mcp
+  labels:
+    app: mcp-odoo-client
+
+---
+# ConfigMap: Odoo Instance Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mcp-odoo-config
+  namespace: mcp
+  labels:
+    app: mcp-odoo-client
+data:
+  # Configuration file for mcp-server-odoo
+  mcp_config.json: |
+    {
+      "instances": {
+        "odoo-14-fnfe": {
+          "url": "https://fnfe.test.flows.cab",
+          "database": "fnfe14",
+          "api_key_env": "ODOO_14_API_KEY"
+        },
+        "odoo-16-fnfe": {
+          "url": "https://fnfe-preprod.flows.cab",
+          "database": "fnfe16",
+          "api_key_env": "ODOO_16_API_KEY"
+        },
+        "odoo-18-erk": {
+          "url": "https://erk.flows.cab",
+          "database": "erk18",
+          "api_key_env": "ODOO_18_API_KEY"
+        }
+      },
+      "settings": {
+        "transport": "stdio",
+        "log_level": "INFO",
+        "timeout": 30,
+        "rate_limit": 100
+      }
+    }
+
+---
+# Secret: Odoo API Keys (use Passbolt for production)
+# To create: kubectl create secret generic mcp-odoo-secrets -n mcp \
+#   --from-literal=ODOO_14_API_KEY=$(pass show odoo/mcp-14-api-key) \
+#   --from-literal=ODOO_16_API_KEY=$(pass show odoo/mcp-16-api-key) \
+#   --from-literal=ODOO_18_API_KEY=$(pass show odoo/mcp-18-api-key)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mcp-odoo-secrets
+  namespace: mcp
+  labels:
+    app: mcp-odoo-client
+type: Opaque
+stringData:
+  ODOO_14_API_KEY: "CHANGE_ME_use_passbolt_odoo_mcp_14_api_key"
+  ODOO_16_API_KEY: "CHANGE_ME_use_passbolt_odoo_mcp_16_api_key"
+  ODOO_18_API_KEY: "CHANGE_ME_use_passbolt_odoo_mcp_18_api_key"
+
+---
+# Deployment: MCP Odoo Client
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-odoo-client
+  namespace: mcp
+  labels:
+    app: mcp-odoo-client
+    component: odoo-mcp
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: mcp-odoo-client
+      component: odoo-mcp
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: mcp-odoo-client
+        component: odoo-mcp
+      annotations:
+        checksum/config: "{{ include (print $.Template.BasePath "/mcp-odoo-client.yaml") . | sha256sum }}"
+    spec:
+      serviceAccountName: mcp-odoo
+      securityContext:
+        runAsNonRoot: true
+        readOnlyRootFilesystem: false
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+      containers:
+      - name: mcp-odoo
+        image: registry.gitlab.akretion.com/akretion/mcp/mcp-odoo-client:latest
+        imagePullPolicy: Always
+        command: ["mcp-server-odoo"]
+        args: ["--transport", "stdio", "--config", "/app/config/mcp_config.json"]
+        env:
+        # Odoo 14 FNFE
+        - name: ODOO_14_URL
+          value: "https://fnfe.test.flows.cab"
+        - name: ODOO_14_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: mcp-odoo-secrets
+              key: ODOO_14_API_KEY
+        - name: ODOO_14_DB
+          value: "fnfe14"
+        
+        # Odoo 16 FNFE
+        - name: ODOO_16_URL
+          value: "https://fnfe-preprod.flows.cab"
+        - name: ODOO_16_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: mcp-odoo-secrets
+              key: ODOO_16_API_KEY
+        - name: ODOO_16_DB
+          value: "fnfe16"
+        
+        # Odoo 18 ERK
+        - name: ODOO_18_URL
+          value: "https://erk.flows.cab"
+        - name: ODOO_18_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: mcp-odoo-secrets
+              key: ODOO_18_API_KEY
+        - name: ODOO_18_DB
+          value: "erk18"
+        
+        # MCP Configuration
+        - name: MCP_TRANSPORT
+          value: "stdio"
+        - name: MCP_LOG_LEVEL
+          value: "INFO"
+        - name: MCP_TIMEOUT
+          value: "30"
+        - name: MCP_RATE_LIMIT
+          value: "100"
+        
+        ports:
+        - name: mcp
+          containerPort: 8000
+          protocol: TCP
+        
+        livenessProbe:
+          httpGet:
+            path: /mcp/health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        
+        readinessProbe:
+          httpGet:
+            path: /mcp/health
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+        
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        
+        volumeMounts:
+        - name: mcp-client
+          mountPath: /app/mcp-server-odoo
+          readOnly: true
+        - name: config
+          mountPath: /app/config
+          readOnly: true
+        
+      volumes:
+      - name: mcp-client
+        emptyDir: {}
+      - name: config
+        configMap:
+          name: mcp-odoo-config
+
+---
+# Service: ClusterIP for internal access
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-odoo-client
+  namespace: mcp
+  labels:
+    app: mcp-odoo-client
+    component: odoo-mcp
+spec:
+  type: ClusterIP
+  selector:
+    app: mcp-odoo-client
+    component: odoo-mcp
+  ports:
+  - name: mcp
+    port: 8000
+    targetPort: 8000
+    protocol: TCP
+
+---
+# Network Policy: Restrict access to Hermes only
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mcp-odoo-allow-hermes
+  namespace: mcp
+  labels:
+    app: mcp-odoo-client
+spec:
+  podSelector:
+    matchLabels:
+      app: mcp-odoo-client
+      component: odoo-mcp
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: pre-prod
+      podSelector:
+        matchLabels:
+          app: hermes
+    ports:
+    - protocol: TCP
+      port: 8000
+  policyTypes:
+  - Ingress
+
+---
+# Horizontal Pod Autoscaler (Optional)
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: mcp-odoo-client
+  namespace: mcp
+  labels:
+    app: mcp-odoo-client
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: mcp-odoo-client
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80

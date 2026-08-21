@@ -1,0 +1,6 @@
+# Requirements for Odoo MCP Server
+odoorpc==0.10.0
+mcp-server==1.2.0
+python-dotenv==1.0.0
+requests==2.31.0
+psycopg2-binary==2.9.7

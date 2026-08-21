@@ -1,0 +1,77 @@
+# Sample spec.yaml for AK (git-aggregator)
+# This file defines the repositories to be cloned and merged for an Odoo project
+
+repos:
+  # Core Odoo repository
+  - repo: https://github.com/odoo/odoo.git
+    branch: 18.0
+    target: odoo
+    
+  # OCB (Odoo Community Backport)
+  - repo: https://github.com/OCA/OCB.git
+    branch: 18.0
+    target: odoo/oca
+    
+  # OCA repositories (example modules)
+  - repo: https://github.com/OCA/account-invoicing.git
+    branch: 18.0
+    target: odoo/oca/account-invoicing
+    
+  - repo: https://github.com/OCA/account-financial-tools.git
+    branch: 18.0
+    target: odoo/oca/account-financial-tools
+    
+  - repo: https://github.com/OCA/social.git
+    branch: 18.0
+    target: odoo/oca/social
+    
+  # Akretion repositories
+  - repo: https://github.com/Akretion/ak-invoicing.git
+    branch: 18.0
+    target: odoo/local-src/ak-invoicing
+    
+  - repo: https://github.com/Akretion/ak-tool.git
+    branch: 18.0
+    target: odoo/local-src/ak-tool
+
+  # Custom/local repositories
+  # - repo: https://github.com/YourOrg/your-custom-module.git
+  #   branch: 18.0
+  #   target: odoo/local-src/your-custom-module
+
+# Merge strategy configuration
+merge_strategy:
+  # Merge OCA addons with Odoo addons
+  - strategy: merge
+    pattern: odoo/addons/*
+    
+  # Replace base modules (Odoo core takes precedence)
+  - strategy: replace
+    pattern: odoo/addons/base/**
+    
+  # Replace web modules
+  - strategy: replace
+    pattern: odoo/addons/web/**
+
+# Patch configuration
+patches:
+  # Apply patches from the patches directory
+  - path: odoo/patches
+    apply: true
+    
+  # Example: Apply specific patches
+  # - path: odoo/patches/account_invoice
+  #   apply: true
+  #   repos:
+  #     - odoo/addons/account
+
+# Options
+options:
+  # Clone depth (shallow clone for faster operations)
+  depth: 1
+  
+  # Number of parallel clone operations
+  parallel: 4
+  
+  # Timeout for clone operations (in seconds)
+  timeout: 300

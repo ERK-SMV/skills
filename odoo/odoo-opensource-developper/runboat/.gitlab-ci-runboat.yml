@@ -1,0 +1,278 @@
+# GitLab CI Configuration for Runboat
+# Deploys and manages Runboat for OCA/vertical-association
+# Reference: odoo-k8s-readme.md, odoo18-AK-template_README.md
+
+stages:
+  - validate
+  - deploy
+  - cleanup
+
+variables:
+  # Kubernetes configuration
+  K8S_NAMESPACE: runboat
+  RUNBOAT_URL: https://runboat.flows.cab
+  
+  # Image configuration
+  RUNBOAT_IMAGE: ghcr.io/sbidoul/runboat:latest
+  
+  # Build configuration
+  RUNBOAT_BUILD_DOMAIN: runboat.flows.cab
+
+# ============================================================================
+# VALIDATION STAGE
+# ============================================================================
+
+validate-config:
+  stage: validate
+  image: bitnami/kubectl:latest
+  script:
+    - echo "Validating Runboat Kubernetes manifests..."
+    - kubectl apply --dry-run=client -f k8s/runboat-vertical-association.yaml
+    - echo "✅ Manifest validation passed"
+  rules:
+    - changes:
+        - k8s/runboat-vertical-association.yaml
+        - k8s/*.yaml
+    - when: manual
+
+validate-ingress:
+  stage: validate
+  image: bitnami/kubectl:latest
+  script:
+    - echo "Checking if wildcard DNS is configured..."
+    - dig +short *.runboat.flows.cab | grep -q . || { echo "⚠️ Wildcard DNS not found"; exit 1; }
+    - echo "✅ Wildcard DNS validation passed"
+    - echo "Checking cert-manager issuer..."
+    - kubectl get clusterissuer letsencrypt-prod || { echo "⚠️ cert-manager issuer not found"; exit 1; }
+    - echo "✅ cert-manager validation passed"
+  rules:
+    - when: manual
+
+# ============================================================================
+# DEPLOYMENT STAGE
+# ============================================================================
+
+setup-secrets:
+  stage: deploy
+  image: bitnami/kubectl:latest
+  script:
+    - echo "Creating Runboat secrets..."
+    - |
+      # Generate secrets if not provided via CI variables
+      WEBHOOK_SECRET=${RUNBOAT_WEBHOOK_SECRET:-$(openssl rand -hex 32)}
+      DB_PASSWORD=${RUNBOAT_DB_PASSWORD:-$(openssl rand -hex 24)}
+      ADMIN_PASSWORD=${RUNBOAT_ADMIN_PASSWORD:-$(openssl rand -hex 16)}
+      
+      # Create or update secrets
+      kubectl create secret generic runboat-secrets -n ${K8S_NAMESPACE} \
+        --from-literal=db-password="$DB_PASSWORD" \
+        --from-literal=webhook-secret="$WEBHOOK_SECRET" \
+        --from-literal=admin-password="$ADMIN_PASSWORD" \
+        --dry-run=client -o yaml | kubectl apply -f -
+    - echo "✅ Secrets created/updated"
+    - echo "Webhook Secret: $WEBHOOK_SECRET"  # Output for GitHub webhook setup
+    - echo "Webhook Secret Base64: $(echo -n $WEBHOOK_SECRET | base64)"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push" || $CI_PIPELINE_SOURCE == "web"
+
+setup-database:
+  stage: deploy
+  image: postgres:16-alpine
+  services:
+    - name: postgres-14
+      alias: postgres
+  script:
+    - echo "Setting up Runboat database..."
+    - |
+      PGPASSWORD=${RUNBOAT_DB_PASSWORD:-$(kubectl get secret runboat-secrets -n ${K8S_NAMESPACE} -o jsonpath='{.data.db-password}' | base64 -d)}
+      export PGPASSWORD
+      psql -h postgres-14.fnfe-test.svc.cluster.local -U odoo -d postgres <<EOF
+        SELECT 'CREATE DATABASE runbot_db;' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'runbot_db')\;
+        SELECT 'CREATE USER runbot WITH PASSWORD ''' || '$PGPASSWORD' || ''';' WHERE NOT EXISTS (SELECT FROM pg_user WHERE usename = 'runbot')\;
+        GRANT ALL PRIVILEGES ON DATABASE runbot_db TO runbot;
+        ALTER USER runboat WITH PASSWORD ''' || '$PGPASSWORD' || ''';
+EOF
+    - echo "✅ Database setup completed"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push" || $CI_PIPELINE_SOURCE == "web"
+      when: on_success
+
+deploy-runboat:
+  stage: deploy
+  image: bitnami/kubectl:latest
+  script:
+    - echo "Deploying Runboat to namespace ${K8S_NAMESPACE}..."
+    - kubectl apply -f k8s/runboat-vertical-association.yaml
+    - echo "✅ Runboat deployed"
+    - kubectl wait --for=condition=available deployment/runboat -n ${K8S_NAMESPACE} --timeout=300s
+    - echo "✅ Runboat is ready"
+    - echo "Access Runboat at: ${RUNBOAT_URL}"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push" || $CI_PIPELINE_SOURCE == "web"
+      when: on_success
+
+verify-deployment:
+  stage: deploy
+  image: curlimages/curl:latest
+  script:
+    - echo "Verifying Runboat deployment..."
+    - |
+      for i in {1..30}; do
+        if curl -sf ${RUNBOAT_URL}/runboat/api/health > /dev/null; then
+          echo "✅ Runboat health check passed"
+          exit 0
+        fi
+        echo "Waiting for Runboat to be ready... ($i/30)"
+        sleep 10
+      done
+      echo "❌ Runboat health check failed"
+      exit 1
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push" || $CI_PIPELINE_SOURCE == "web"
+      when: on_success
+
+# ============================================================================
+# CLEANUP STAGE
+# ============================================================================
+
+cleanup-old-builds:
+  stage: cleanup
+  image: bitnami/kubectl:latest
+  script:
+    - echo "Cleaning up old builds..."
+    - |
+      # Stop all started builds older than 7 days
+      kubectl get deployments -n ${K8S_NAMESPACE} -l runboat/build,runboat/init-status=succeeded \
+        -o jsonpath='{range .items[?(@.metadata.creationTimestamp)]}{.metadata.name}{"\n"}{end}' \
+        | xargs -I {} kubectl scale deployment/{} --replicas=0 -n ${K8S_NAMESPACE}
+      
+      # Delete builds older than 30 days
+      kubectl delete deployments -n ${K8S_NAMESPACE} -l runboat/build \
+        --field-selector=metadata.creationTimestamp<$(date -d "30 days ago" +%Y-%m-%dT%H:%M:%SZ) \
+        --ignore-not-found
+      
+      echo "✅ Old builds cleanup completed"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: on_success
+
+# ============================================================================
+# GITHUB WEBHOOK STAGE
+# ============================================================================
+
+setup-github-webhook:
+  stage: deploy
+  image: curlimages/curl:latest
+  script:
+    - echo "Setting up GitHub webhook for OCA/vertical-association..."
+    - |
+      WEBHOOK_SECRET=${RUNBOAT_WEBHOOK_SECRET:-$(kubectl get secret runboat-secrets -n ${K8S_NAMESPACE} -o jsonpath='{.data.webhook-secret}' | base64 -d)}
+      
+      # Create webhook payload
+      WEBHOOK_PAYLOAD=$(jq -n \
+        --arg url "${RUNBOAT_URL}/runboat/hook/github" \
+        --arg secret "$WEBHOOK_SECRET" \
+        '{
+          "name": "web",
+          "active": true,
+          "events": ["push", "pull_request", "issue_comment"],
+          "config": {
+            "url": $url,
+            "content_type": "json",
+            "secret": $secret,
+            "insecure_ssl": "0"
+          }
+        }')
+      
+      echo "Webhook configuration:"
+      echo "URL: ${RUNBOAT_URL}/runboat/hook/github"
+      echo "Secret: $WEBHOOK_SECRET"
+      echo ""
+      echo "To manually create the webhook, use:"
+      echo "  curl -X POST https://api.github.com/repos/OCA/vertical-association/hooks \"
+      echo "    -H 'Authorization: token YOUR_GITHUB_TOKEN' \"
+      echo "    -H 'Content-Type: application/json' \"
+      echo "    -d '$WEBHOOK_PAYLOAD'"
+      
+      # Note: Actual webhook creation requires GitHub token with repo scope
+      # This is intentionally left manual for security
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push" || $CI_PIPELINE_SOURCE == "web"
+      when: on_success
+
+# ============================================================================
+# TRIGGER STAGE (For OCA/vertical-association changes)
+# ============================================================================
+
+trigger-runboat:
+  stage: deploy
+  image: curlimages/curl:latest
+  rules:
+    - if: $CI_PROJECT_NAMESPACE == "OCA" && $CI_PROJECT_NAME == "vertical-association"
+      when: on_success
+  script:
+    - echo "Triggering Runboat build for OCA/vertical-association..."
+    - |
+      WEBHOOK_SECRET=${RUNBOAT_WEBHOOK_SECRET:-$(kubectl get secret runboat-secrets -n ${K8S_NAMESPACE} -o jsonpath='{.data.webhook-secret}' | base64 -d)}
+      
+      # Trigger build via API
+      BUILD_DATA=$(jq -n \
+        --arg repo "OCA/vertical-association" \
+        --arg branch "$CI_COMMIT_REF_NAME" \
+        --arg sha "$CI_COMMIT_SHA" \
+        --arg target "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME" \
+        '{
+          "repo": $repo,
+          "branch": $branch,
+          "target_branch": ($target // $branch),
+          "commit": $sha
+        }')
+      
+      curl -X POST \
+        -H "Content-Type: application/json" \
+        -H "X-GitHub-Event: push" \
+        -H "X-Hub-Signature-256: sha256=$(echo -n "$BUILD_DATA" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" | cut -d' ' -f2)" \
+        -d "$BUILD_DATA" \
+        ${RUNBOAT_URL}/runboat/hook/github
+    - echo "✅ Build triggered"
+
+# ============================================================================
+# UTILITY JOBS
+# ============================================================================
+
+list-builds:
+  stage: .pre
+  image: curlimages/curl:latest
+  script:
+    - echo "Listing all Runboat builds..."
+    - curl -sf ${RUNBOAT_URL}/runboat/api/builds | jq '.[] | {id, repo, branch, status, created}'
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "web"
+      when: manual
+
+restart-runboat:
+  stage: .pre
+  image: bitnami/kubectl:latest
+  script:
+    - echo "Restarting Runboat controller..."
+    - kubectl rollout restart deployment/runboat -n ${K8S_NAMESPACE}
+    - kubectl wait --for=condition=available deployment/runboat -n ${K8S_NAMESPACE} --timeout=300s
+    - echo "✅ Runboat restarted"
+  rules:
+    - when: manual
+
+# ============================================================================
+# NOTIFICATIONS
+# ============================================================================
+
+.notify-runboat:
+  stage: deploy
+  image: curlimages/curl:latest
+  script:
+    - echo "Runboat deployment completed"
+    - echo "📊 Runboat Dashboard: ${RUNBOAT_URL}"
+    - echo "🔧 GitHub Webhook: ${RUNBOAT_URL}/runboat/hook/github"
+    - echo "📝 To add webhook: Settings > Webhooks > Add webhook"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push" || $CI_PIPELINE_SOURCE == "web"
+      when: on_success

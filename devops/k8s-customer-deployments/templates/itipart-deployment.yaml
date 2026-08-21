@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: itipart-app
+  namespace: itipart
+  labels:
+    app: itipart-app
+    customer: itipart
+    repo: fnfe
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: itipart-app
+  template:
+    metadata:
+      labels:
+        app: itipart-app
+        customer: itipart
+    spec:
+      containers:
+      - name: itipart-app
+        image: your-repo/fnfe:latest
+        ports:
+        - containerPort: 8080
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "512Mi"
+          limits:
+            cpu: "1"
+            memory: "1Gi"
+        env:
+        - name: CUSTOMER
+          value: "itipart"
+        - name: ENVIRONMENT
+          value: "production"
+      nodeSelector:
+        kubernetes.io/arch: amd64
