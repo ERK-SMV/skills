@@ -1,0 +1,45 @@
+{
+  "name": "ERK BE",
+  "legal_form": "SRL",
+  "bce_number": "0123.456.789",
+  "vat_number": "BE0123456789",
+  "address": "Rue Example 1, 1000 Bruxelles",
+  "country": "BE",
+  "region": "_comment: Bruxelles-Capitale, Flandre ou Wallonie - impacte certaines aides regionales, pas la fiscalite federale (TVA/ISOC/IPP)",
+  "fiscal_year": {
+    "start": "2026-01-01",
+    "end": "2026-12-31",
+    "is_first_year": false
+  },
+  "tva": {
+    "regime": "assujetti_normal",
+    "frequence": "trimestrielle",
+    "_comment": "regime: assujetti_normal | franchise_petite_entreprise | regime_marge. frequence: mensuelle | trimestrielle (uniquement si assujetti_normal)"
+  },
+  "isoc": {
+    "taux_reduit_pme_eligible": null,
+    "_comment": "null = a determiner. true seulement si les 4 conditions cumulatives sont verifiees (voir references/impots-be.md)"
+  },
+  "banks": [
+    {
+      "id": "bank-1",
+      "name": "Banque Principale",
+      "iban": "",
+      "pcmn_account": "550"
+    }
+  ],
+  "invoicing": {
+    "prefix": "F",
+    "next_numbers": {
+      "2026": 1
+    },
+    "avoir_prefix": "NC",
+    "_comment": "NC = Note de Credit. Numerotation continue et ininterrompue exigee."
+  },
+  "peppol": {
+    "access_point": "",
+    "peppol_id": "",
+    "b2b_ready": false,
+    "_comment": "Obligatoire pour le B2B domestique belge a partir du 01/01/2026. peppol_id format iso6523:bce, ex '0208:0123456789'"
+  }
+}

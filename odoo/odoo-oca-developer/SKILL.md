@@ -251,6 +251,42 @@ flake8 module_name/
 pylint --load-plugins=pylint_odoo module_name/
 ```
 
+### 7. Testing
+
+Write and run tests following Odoo's own testing framework, and lint/CI following OCA conventions. See [testing_and_qa.md](references/testing_and_qa.md) for the full guide (test tags, `HttpCase`/tour testing, `assertQueryCount`, `ERK-SMV/module_git-mgmt` repo scaffolding, `pre-commit`/pylint-odoo config, `oca_dependencies.txt`).
+
+**Layout:**
+```
+your_module/
+└── tests/
+    ├── __init__.py      # must import every test_*.py or it won't run
+    ├── test_foo.py
+    └── test_bar.py
+```
+
+**Minimal unit test:**
+```python
+from odoo.tests import TransactionCase, tagged
+
+@tagged('post_install', '-at_install')
+class TestModelA(TransactionCase):
+    def test_some_action(self):
+        record = self.env['model.a'].create({'field': 'value'})
+        record.some_action()
+        self.assertEqual(record.field, 'expected')
+```
+
+**Run:**
+```bash
+odoo-bin --test-tags /your_module          # only this module's tests
+odoo-bin --test-tags '/your_module,-slow'  # excluding slow-tagged tests
+```
+
+**Lint before pushing (OCA repos):**
+```bash
+pre-commit run -a
+```
+
 ## Workflow Decision Tree
 
 **"I need to create a new Odoo module"**
@@ -284,6 +320,29 @@ pylint --load-plugins=pylint_odoo module_name/
 → Verify file naming and structure
 → Ensure OCA author attribution
 
+**"I need to write or run tests for my module"**
+→ Reference [testing_and_qa.md](references/testing_and_qa.md)
+→ `TransactionCase` for model logic, `HttpCase` + `@tagged('-at_install', 'post_install')` for controllers/tours
+→ `tests/__init__.py` must import every `test_*.py`
+→ Run selectively with `odoo-bin --test-tags /your_module`
+→ Lint with `pre-commit run -a` before pushing (scaffolded by `ERK-SMV/module_git-mgmt`)
+
+**"I need to build a git tag management app"**
+→ Reference [version_control_platform.md](references/version_control_platform.md) — `OCA/version-control-platform` (18.0) is the closest existing architecture
+→ Mirror its `vcp.branch` / `vcp.repository.branch` split for `vcp.tag` / `vcp.repository.tag` (platform-scoped tag name + per-repo join row)
+→ Reuse its kind-dispatch pattern (`getattr(self, f"_download_code_{code_kind}")`) instead of if/elif per host
+→ Reuse its GitPython clone/fetch code as the template, but note tag fetch needs an explicit `refs/tags/<name>` refspec (branch-style `remote.fetch(name)` isn't proven for tags — verify)
+→ Reuse the `scheduled_*_update` + `_cron_update_*(limit)` batching pattern for tag sync, not a bespoke job queue
+
+**"I need to check whether a running DB was actually restored from a given dump"** (`odoo_restauration_check`)
+→ Reference [db_restore_verification.md](references/db_restore_verification.md) — read-only, no superuser, no CREATEDB needed
+→ Confirm the DB name Odoo actually connects to (`grep db_name odoo.cfg` / `env | grep PG`), then check *that* DB
+→ Compare the dump's `pg_restore -l` `Archive created at` against the live data horizon (`max(create_date)` on `mail_message` / `ir_attachment`)
+→ Check `~/.bash_history` for `pg_restore|createdb|dropdb` — the last restore often names a *different* `.dump` than you expect
+→ Prove it row-for-row: load the dump's table into a TEMP table in the live connection and compare `md5(string_agg(md5(row::text), '' ORDER BY id))`
+→ Or just run [`scripts/verify_db_restore.sh`](scripts/verify_db_restore.sh) `DUMP_FILE [TABLE]` → prints `VERDICT: MATCH` / `MISMATCH`
+→ Ignore `database.uuid` / `web.base.url` (copied from source on every restore) and `pg_stat_file` (superuser-only)
+
 ## Resources
 
 ### scripts/
@@ -291,10 +350,14 @@ pylint --load-plugins=pylint_odoo module_name/
 - **validate_module.py**: Validate module against OCA conventions
 - **list_k8s_pods.py**: List and manage Kubernetes pods for Odoo development
 - **check_k8s_permissions.py**: Check RBAC permissions and suggest workarounds
+- **verify_db_restore.sh**: Confirm a live Postgres DB is the restore of a given `.dump` (`odoo_restauration_check`) — dump header vs. live data horizon, row count, and a row-for-row TEMP-table content hash; prints `VERDICT: MATCH` / `MISMATCH`. Read-only, no superuser.
 
 ### references/
 - **oca_conventions.md**: Complete OCA coding standards and module structure guidelines
 - **openupgrade_migration.md**: OpenUpgrade migration patterns and best practices
+- **testing_and_qa.md**: Odoo test framework (tags, `HttpCase`/tours, `assertQueryCount`), plus OCA-style QA tooling (`ERK-SMV/module_git-mgmt` copier template, pre-commit/pylint-odoo config, `maintainer-quality-tools` conventions)
+- **version_control_platform.md**: `OCA/version-control-platform` (18.0) architecture — host/platform/repository/branch data model, kind-dispatch extensibility pattern, GitPython clone/fetch integration, rule engine, cron-sync pattern; includes a gap analysis for extending it to git tags (no `vcp.tag` model exists upstream)
+- **db_restore_verification.md**: `odoo_restauration_check` — prove a running Odoo DB is the restore of a specific `pg_dump` file. Evidence stack (container `db_name` → dump `Archive created at` → live data horizon → row count → row-for-row content hash via a TEMP table), how to do it with no superuser / no CREATEDB against a `pg_hba`-locked app role, and which signals (`database.uuid`, `pg_stat_file`, "container started OK") are red herrings
 
 ### assets/
 - **module_template/**: Official OCA module template with complete directory structure
@@ -709,6 +772,20 @@ See [openupgrade_migration.md](references/openupgrade_migration.md)
 **Module template:**
 Copy from [assets/module_template/](assets/module_template/)
 
+**Testing & QA guide:**
+See [testing_and_qa.md](references/testing_and_qa.md)
+
+**Git tag / version control platform architecture:**
+See [version_control_platform.md](references/version_control_platform.md)
+
+**Check a DB was restored from a given dump (`odoo_restauration_check`):**
+```bash
+# from inside the odoo container / host, with PG* env set (same as `psql` no-args)
+scripts/verify_db_restore.sh ~/backup_prod_YYYYMMDD_HHMM.dump            # defaults to mail_message
+scripts/verify_db_restore.sh ~/backup_prod_YYYYMMDD_HHMM.dump res_partner id
+```
+See [db_restore_verification.md](references/db_restore_verification.md)
+
 **List Kubernetes pods:**
 ```bash
 # List all pods in namespace
@@ -877,6 +954,19 @@ This skill is automatically invoked when you ask about:
 - Odoo module validation
 - Odoo testing patterns
 - Odoo troubleshooting
+- Odoo tests, tagged(), TransactionCase, HttpCase, test tours, start_tour, browser_js
+- assertQueryCount, performance testing, test-tags selection
+- OCA pre-commit config, pylint-odoo, flake8 config for Odoo
+- maintainer-quality-tools, oca_dependencies.txt, Travis/GHA CI for OCA repos
+- ERK-SMV module_git-mgmt, copier template for OCA addon repos
+- git tag management, git tags in Odoo, version control platform
+- OCA version-control-platform, vcp_git, vcp_github, vcp_management, vcp_odoo
+- GitPython, git clone/fetch from Odoo, GitHub API sync into Odoo (github3.py)
+- kind-dispatch pattern, host/platform/repository/branch data model
+- odoo_restauration_check, verify DB restored from dump, check which dump Postgres is using
+- pg_restore verification, dump vs live row count / content hash, TEMP table hash compare
+- Odoo data horizon check (max create_date), pg_hba app-role restriction, no-superuser DB checks
+- "did the restore work", stale dump loaded, docky run wrong database
 
 ### Kubernetes Integration
 - Kubernetes pods for Odoo
